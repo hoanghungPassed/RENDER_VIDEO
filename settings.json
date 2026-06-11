@@ -1,0 +1,21 @@
+{
+    "folder_singer_root": "C:/Users/HoangHung/Desktop/Tool/MassProductionStudio/DATA/Gospel",
+    "folder_effect_long": "C:/Users/HoangHung/Desktop/Tool/MassProductionStudio/DATA/EFF  video",
+    "folder_effect_short": "C:/Users/HoangHung/Desktop/Tool/MassProductionStudio/DATA/EFF short",
+    "folder_output": "C:/Users/HoangHung/Desktop/TEST",
+    "font_path": "",
+    "font_x": "100",
+    "font_y": "300",
+    "font_s": "40",
+    "songs_per_video": "3",
+    "songs_in_list": "5",
+    "num_long_videos": "1",
+    "out_multiplier": "1",
+    "short_duration": "60",
+    "num_short_videos": "1",
+    "short_namepng_x": "100",
+    "short_namepng_y": "1200",
+    "short_namepng_s": "300",
+    "thread_count": 1,
+    "download_save_folder": ""
+}

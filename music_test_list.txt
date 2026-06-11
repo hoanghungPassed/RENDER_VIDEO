@@ -1,0 +1,2 @@
+file 'C:/Users/HoangHung/Desktop/Tool/MassProductionStudio/DATA/Gospel/Amanda Wanessa/Musics/Coral de Glória.mp3'
+file 'C:/Users/HoangHung/Desktop/Tool/MassProductionStudio/DATA/Gospel/Amanda Wanessa/Musics/Bálsamo.mp3'
