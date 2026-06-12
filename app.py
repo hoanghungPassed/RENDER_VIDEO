@@ -501,8 +501,13 @@ class VideoRenderApp(ctk.CTk):
                     self.after(0, self._update_button_states)
                     return
 
+                import time
+
+                # --- SỬ LỖI ĐỒNG HỒ KHÔNG CHẠY ---
                 # Khởi tạo tracking trạng thái render của từng ca sĩ
                 singer_tracking = {}
+                current_time = time.time() # Lấy giờ hiện tại ngay lập tức
+                
                 for s in selected_singers:
                     name = s['name']
                     singer_jobs = [j for j in jobs if j.get('singer_name') == name]
@@ -510,12 +515,12 @@ class VideoRenderApp(ctk.CTk):
                         singer_tracking[name] = {
                             'total': len(singer_jobs),
                             'completed': 0,
-                            'status': 'Chờ',
-                            'start_time': None,
+                            'status': 'Đang render',
+                            'start_time': current_time, # Bắt đầu đếm giờ ngay khi bấm nút
                             'final_time': None
                         }
-                        self.video_tab.update_singer_status(name, "Chờ")
-                        self.video_tab.update_singer_time(name, "-")
+                        self.video_tab.update_singer_status(name, "Đang render", 0)
+                        self.video_tab.update_singer_time(name, "00:00")
                     else:
                         self.video_tab.update_singer_status(name, "Bỏ qua")
 
@@ -539,13 +544,8 @@ class VideoRenderApp(ctk.CTk):
                     singer_name = job.get('singer_name')
                     if singer_name in singer_tracking:
                         info = singer_tracking[singer_name]
-                        if info['start_time'] is None:
-                            info['start_time'] = time.time()
-                            self.video_tab.update_singer_status(singer_name, "Đang render", 0)
-
                         info['completed'] += 1
-                        percent = (info['completed'] / info['total']) * 100
-
+                        
                         if info['completed'] >= info['total']:
                             final_elapsed = int(time.time() - info['start_time'])
                             mins = final_elapsed // 60
@@ -553,26 +553,63 @@ class VideoRenderApp(ctk.CTk):
                             info['final_time'] = final_elapsed
                             self.video_tab.update_singer_time(singer_name, f"{mins:02d}:{secs:02d}")
                             self.video_tab.update_singer_status(singer_name, "Xong")
-                        else:
-                            self.video_tab.update_singer_status(singer_name, "Đang render", percent)
 
-                # Cập nhật thời gian render từng ca sĩ liên tục
-                def _update_singer_clocks():
-                    if self.render_engine.is_running:
-                        current_time = time.time()
-                        for name, info in singer_tracking.items():
-                            if info['completed'] < info['total']:
-                                if info['start_time'] is not None:
-                                    elapsed = int(current_time - info['start_time'])
-                                    mins = elapsed // 60
-                                    secs = elapsed % 60
-                                    self.video_tab.update_singer_time(name, f"{mins:02d}:{secs:02d}")
-                        self.after(1000, _update_singer_clocks)
+                # --- CỐI ƯU HÓA SÂU: SỬ DỤNG MÔ HÌNH POLLING ĐỂ KHỬ LAG TUYỆT ĐỐI ---
+                # Thay vì mỗi thread gửi lệnh cập nhật UI (Push), ta dùng một vòng lặp ở luồng chính tự đọc dữ liệu (Pull)
+                
+                # Dictionary lưu % hiện tại của từng job (để các thread worker cập nhật vào)
+                current_job_progress = {} # {singer_name: current_percent}
 
-                self.after(1000, _update_singer_clocks)
+                def _realtime_progress_cb(label, percent):
+                    # CHỈ CẬP NHẬT DỮ LIỆU, KHÔNG ĐỤNG VÀO UI Ở ĐÂY
+                    # label chính là singer_name được truyền từ _make_cb
+                    current_job_progress[label] = percent
 
-                # Phase 3: Render
+                # Nhúng callback vào từng job
+                for job in jobs:
+                    s_name = job.get('singer_name')
+                    def _make_cb(name):
+                        return lambda lbl, pct: _realtime_progress_cb(name, pct)
+                    job['realtime_cb'] = _make_cb(s_name)
+
+                # Biến lưu trạng thái UI cũ để tránh vẽ lại trùng lặp
+                last_ui_state = {} # {singer_name: (status_text, time_text)}
+
+                def _ui_polling_loop():
+                    """Vòng lặp duy nhất ở luồng chính để cập nhật toàn bộ giao diện."""
+                    if not self.render_engine.is_running:
+                        return
+
+                    now = time.time()
+                    for name, info in singer_tracking.items():
+                        if info['completed'] < info['total']:
+                            # 1. Tính toán thời gian
+                            time_str = "-"
+                            if info['start_time']:
+                                elapsed = int(now - info['start_time'])
+                                time_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+                            
+                            # 2. Tính toán trạng thái & %
+                            pct = current_job_progress.get(name, 0.0)
+                            total_pct = min(((info['completed'] + pct / 100.0) / info['total']) * 100, 99.9)
+                            status_text = f"Đang render ({total_pct:.1f}%)"
+
+                            # 3. Chỉ cập nhật widget nếu có sự thay đổi (tiết kiệm CPU)
+                            old_state = last_ui_state.get(name, ("", ""))
+                            if old_state != (status_text, time_str):
+                                self.video_tab.update_singer_time(name, time_str)
+                                self.video_tab.update_singer_status(name, "Đang render", total_pct)
+                                last_ui_state[name] = (status_text, time_str)
+
+                    # Chạy lại sau 300ms (Khoảng 3 lần mỗi giây là đủ mượt và cực nhẹ)
+                    self.after(300, _ui_polling_loop)
+
+                # Bắt đầu vòng lặp polling
+                self.after(300, _ui_polling_loop)
+
+                # Chạy Engine
                 def _progress(current, total):
+                    # Progress tổng quát (khi xong 1 video)
                     def _update():
                         self.video_tab.render_progress.set(current / total)
                         self.video_tab.render_status.configure(
@@ -582,8 +619,7 @@ class VideoRenderApp(ctk.CTk):
 
                 self.render_engine.start(
                     jobs=jobs,
-                    config={'folders': folders, 'long': long_config,
-                            'short': short_config},
+                    config={'folders': folders, 'long': long_config, 'short': short_config},
                     max_workers=self.video_tab.get_thread_count(),
                     progress_callback=_progress,
                     log_callback=self.log,

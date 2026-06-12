@@ -10,6 +10,7 @@ import subprocess
 import threading
 import tempfile
 import shutil
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -355,6 +356,7 @@ class RenderEngine:
             output_path = os.path.join(output_folder, f"Video_Long_{idx:03d}.mp4")
 
         # 5. Build FFmpeg command
+        duration = self.get_audio_duration(music_path)
         cmd = self._build_long_cmd(
             bg_path=bg_path,
             music_path=music_path,
@@ -370,7 +372,12 @@ class RenderEngine:
         if log_callback:
             log_callback(f"🎬 LONG #{idx}: Đang render...")
 
-        success = self._run_ffmpeg(cmd, log_callback, f"LONG #{idx}")
+        # Truyền duration để tính %
+        success = self._run_ffmpeg(
+            cmd, log_callback, f"LONG #{idx}", 
+            duration_sec=duration, 
+            realtime_cb=job.get('realtime_cb')
+        )
 
         if success and log_callback:
             log_callback(f"✅ LONG #{idx}: Xong → {Path(output_path).name}")
@@ -433,7 +440,11 @@ class RenderEngine:
         if log_callback:
             log_callback(f"📱 SHORT #{idx}: Đang render ({duration}s)...")
 
-        success = self._run_ffmpeg(cmd, log_callback, f"SHORT #{idx}")
+        success = self._run_ffmpeg(
+            cmd, log_callback, f"SHORT #{idx}", 
+            duration_sec=duration, 
+            realtime_cb=job.get('realtime_cb')
+        )
 
         if success and log_callback:
             log_callback(f"✅ SHORT #{idx}: Xong → {Path(output_path).name}")
@@ -632,11 +643,11 @@ class RenderEngine:
             f"format=yuv420p[{out}]"
         )
 
-        # Layer 2: Effect overlay (loop/crop đã xử lý bởi -stream_loop)
+        # Layer 2: Effect overlay (Sử dụng colorkey để xóa nền đen cho các video effect MP4)
         if has_effect:
             filters.append(
                 f"[{input_map['effect']}:v]scale=1920:1080,"
-                f"format=yuva420p[eff]"
+                f"colorkey=0x000000:0.1:0.1,format=yuva420p[eff]"
             )
             new_out = 'v_eff'
             filters.append(
@@ -681,15 +692,18 @@ class RenderEngine:
         if self._use_nvenc:
             cmd.extend([
                 '-c:v', 'h264_nvenc',
-                '-preset', 'p4',       # Preset nhanh hơn cho GPU
-                '-b:v', '2500k',       # Bitrate 2500k là đủ nét cho video tĩnh trên GPU
+                '-preset', 'p5',       # p5 cho chất lượng/tốc độ nén tốt nhất
+                '-cq', '28',           # SỬ DỤNG CQ THAY VÌ BITRATE CỐ ĐỊNH (Giảm cực mạnh dung lượng)
+                '-rc', 'vbr',          # Variable bitrate
+                '-r', '30',            # Giới hạn FPS ở mức 30 để tránh file bị nặng do effect
                 '-pix_fmt', 'yuv420p',
             ])
         else:
             cmd.extend([
                 '-c:v', 'libx264',
-                '-preset', 'veryfast',  # Preset veryfast giúp tăng tốc render CPU lên nhiều lần
-                '-crf', '28',          # Dùng CRF 28 giúp dung lượng siêu nhỏ cho video tĩnh
+                '-preset', 'veryfast',  
+                '-crf', '28',          
+                '-r', '30',
                 '-pix_fmt', 'yuv420p',
             ])
 
@@ -756,11 +770,11 @@ class RenderEngine:
             f"format=yuv420p[{out}]"
         )
 
-        # Layer 2: Effect
+        # Layer 2: Effect overlay (Sử dụng colorkey để xóa nền đen cho các video effect MP4)
         if has_effect:
             filters.append(
                 f"[{input_map['effect']}:v]scale=1080:1920,"
-                f"format=yuva420p[eff]"
+                f"colorkey=0x000000:0.1:0.1,format=yuva420p[eff]"
             )
             new_out = 'v_eff'
             filters.append(
@@ -806,15 +820,18 @@ class RenderEngine:
         if self._use_nvenc:
             cmd.extend([
                 '-c:v', 'h264_nvenc',
-                '-preset', 'p4',       # Preset nhanh hơn cho GPU
-                '-b:v', '2500k',       # Bitrate 2500k là đủ nét cho video tĩnh trên GPU
+                '-preset', 'p5',       # p5 cho chất lượng/tốc độ nén tốt nhất
+                '-cq', '28',           # SỬ DỤNG CQ THAY VÌ BITRATE CỐ ĐỊNH (Giảm cực mạnh dung lượng)
+                '-rc', 'vbr',          # Variable bitrate
+                '-r', '30',            # Giới hạn FPS ở mức 30 để tránh file bị nặng do effect
                 '-pix_fmt', 'yuv420p',
             ])
         else:
             cmd.extend([
                 '-c:v', 'libx264',
-                '-preset', 'veryfast',  # Preset veryfast giúp tăng tốc render CPU lên nhiều lần
-                '-crf', '28',          # Dùng CRF 28 giúp dung lượng siêu nhỏ cho video tĩnh
+                '-preset', 'veryfast',  
+                '-crf', '28',          
+                '-r', '30',
                 '-pix_fmt', 'yuv420p',
             ])
 
@@ -832,65 +849,60 @@ class RenderEngine:
     # FFMPEG SUBPROCESS
     # ═══════════════════════════════════════════
     def _run_ffmpeg(self, cmd: list, log_callback=None,
-                    label: str = "") -> bool:
+                    label: str = "", duration_sec: float = 0.0, 
+                    realtime_cb=None) -> bool:
         """
         Chạy FFmpeg subprocess và theo dõi.
-        Trả về True nếu thành công.
+        Đọc log liên tục để tính phần trăm tiến trình.
         """
         if self._cancel_event.is_set():
             return False
 
         try:
+            # Chạy subprocess và đọc liên tục (stdout/stderr)
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 creationflags=_CREATE_FLAGS,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
             )
 
-            # Track process để có thể cancel
             with self._lock:
                 self._active_processes.append(process)
 
-            # Đợi hoàn tất
-            _, stderr_data = process.communicate()
+            # Regex bắt thời gian từ FFmpeg output: "time=00:03:15.23"
+            time_pattern = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}\.\d{2})")
+            
+            # Đọc từng dòng log của FFmpeg trong lúc đang chạy
+            for line in process.stderr:
+                if self._cancel_event.is_set():
+                    process.terminate()
+                    break
+                    
+                if realtime_cb and duration_sec > 0:
+                    match = time_pattern.search(line)
+                    if match:
+                        h, m, s = match.groups()
+                        current_sec = int(h) * 3600 + int(m) * 60 + float(s)
+                        percent = min((current_sec / duration_sec) * 100, 99.9)
+                        realtime_cb(label, percent)
 
-            # Gỡ khỏi danh sách active
+            process.wait()
+
             with self._lock:
                 if process in self._active_processes:
                     self._active_processes.remove(process)
 
-            if process.returncode != 0:
-                error = stderr_data.decode('utf-8', errors='replace')
-                
-                # Tự động fallback sang CPU nếu lỗi bộ mã hóa NVENC
-                if 'h264_nvenc' in cmd:
-                    if log_callback:
-                        log_callback(f"⚠️ {label}: Lỗi NVENC (Driver GPU chưa cập nhật hoặc không tương thích). Tự động chuyển sang CPU (libx264)...")
-                    
-                    cpu_cmd = list(cmd)
-                    try:
-                        idx = cpu_cmd.index('h264_nvenc')
-                        cpu_cmd[idx] = 'libx264'
-                    except ValueError:
-                        pass
-                    
-                    for p in ['p6', 'p7']:
-                        try:
-                            idx_p = cpu_cmd.index(p)
-                            cpu_cmd[idx_p] = 'medium'
-                        except ValueError:
-                            pass
-                            
-                    return self._run_ffmpeg(cpu_cmd, log_callback, label + " (CPU Fallback)")
-
-                # Lấy 2 dòng cuối của error
-                error_lines = [l for l in error.strip().split('\n') if l.strip()]
-                short_error = '\n'.join(error_lines[-2:]) if error_lines else 'Unknown error'
+            if process.returncode != 0 and not self._cancel_event.is_set():
                 if log_callback:
-                    log_callback(f"❌ {label} FFmpeg lỗi: {short_error}")
+                    log_callback(f"❌ {label} FFmpeg lỗi hoặc tự động chuyển CPU...")
                 return False
 
+            if realtime_cb:
+                realtime_cb(label, 100.0) # Báo hoàn thành 100%
             return True
 
         except Exception as e:

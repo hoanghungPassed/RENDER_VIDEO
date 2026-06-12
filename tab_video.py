@@ -38,6 +38,7 @@ class VideoTab(ctk.CTkFrame):
         self.out_multiplier = ctk.StringVar(value="1")
 
         # ─── Biến cấu hình Short ───
+        self.is_render_short = ctk.BooleanVar(value=True)
         self.short_duration = ctk.StringVar(value="60")
         self.num_short_videos = ctk.StringVar(value="1")
         self.short_namepng_x = ctk.StringVar(value="100")
@@ -395,12 +396,23 @@ class VideoTab(ctk.CTkFrame):
     # ─────────────────────────────────────────────
     def _build_short_config_section(self, parent):
         """Xây dựng phần cấu hình Video Short (Compact)."""
+        header_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        header_frame.pack(fill="x", padx=0, pady=(0, 4))
+        
         header = ctk.CTkLabel(
-            parent, text="📱  CẤU HÌNH VIDEO SHORT (9:16)",
+            header_frame, text="📱  CẤU HÌNH VIDEO SHORT (9:16)",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w"
         )
-        header.pack(fill="x", padx=0, pady=(0, 4))
+        header.pack(side="left")
+
+        self.cb_short = ctk.CTkCheckBox(
+            header_frame, text="Render Short",
+            variable=self.is_render_short,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            width=20
+        )
+        self.cb_short.pack(side="right", padx=5)
 
         config_frame = ctk.CTkFrame(parent, fg_color=("gray88", "gray17"))
         config_frame.pack(fill="both", expand=True, padx=0, pady=0)
@@ -620,6 +632,7 @@ class VideoTab(ctk.CTkFrame):
     def get_short_config(self) -> dict:
         """Trả về cấu hình Video Short."""
         return {
+            'is_render_short': self.is_render_short.get(),
             'short_duration': self._safe_int(self.short_duration.get(), 60),
             'num_short_videos': self._safe_int(self.num_short_videos.get(), 1),
             'short_namepng_x': self._safe_int(self.short_namepng_x.get(), 100),

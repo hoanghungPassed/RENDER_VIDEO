@@ -339,7 +339,7 @@ def prepare_all_jobs(folders: dict, selected_singers: list, long_config: dict, s
 
         # Short video jobs for this singer
         singer_short_jobs = []
-        if short_config.get('num_short_videos', 0) > 0:
+        if short_config.get('is_render_short', True) and short_config.get('num_short_videos', 0) > 0:
             singer_short_jobs = generate_short_video_jobs(media, short_config, log_callback)
             for job in singer_short_jobs:
                 job['singer_name'] = singer_name
