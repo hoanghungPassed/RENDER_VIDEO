@@ -572,15 +572,6 @@ class VideoTab(ctk.CTkFrame):
         )
         self.render_status.grid(row=0, column=5, padx=(10, 15), pady=6, sticky="e")
 
-        # Progress bar
-        self.render_progress = ctk.CTkProgressBar(
-            controls_container, height=6,
-            progress_color=("#16a34a", "#22c55e"),
-            fg_color=("gray80", "gray20"),
-        )
-        self.render_progress.pack(fill="x", pady=0)
-        self.render_progress.set(0)
-
     def _on_thread_change(self, value):
         """Cập nhật label khi kéo slider."""
         n = int(round(value))

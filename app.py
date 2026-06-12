@@ -589,19 +589,19 @@ class VideoRenderApp(ctk.CTk):
                                 elapsed = int(now - info['start_time'])
                                 time_str = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
                             
-                            # 2. Tính toán trạng thái & %
+                            # 2. Tính toán trạng thái & % của video hiện tại
                             pct = current_job_progress.get(name, 0.0)
-                            total_pct = min(((info['completed'] + pct / 100.0) / info['total']) * 100, 99.9)
-                            status_text = f"Đang render ({total_pct:.1f}%)"
-
+                            # Hiển thị dạng: Đang render 1/2 (45.5%)
+                            status_label = f"Đang render {info['completed']+1}/{info['total']}"
+                            
                             # 3. Chỉ cập nhật widget nếu có sự thay đổi (tiết kiệm CPU)
                             old_state = last_ui_state.get(name, ("", ""))
-                            if old_state != (status_text, time_str):
+                            if old_state != (status_label, time_str, pct):
                                 self.video_tab.update_singer_time(name, time_str)
-                                self.video_tab.update_singer_status(name, "Đang render", total_pct)
-                                last_ui_state[name] = (status_text, time_str)
+                                self.video_tab.update_singer_status(name, status_label, pct)
+                                last_ui_state[name] = (status_label, time_str, pct)
 
-                    # Chạy lại sau 300ms (Khoảng 3 lần mỗi giây là đủ mượt và cực nhẹ)
+                    # Chạy lại sau 300ms
                     self.after(300, _ui_polling_loop)
 
                 # Bắt đầu vòng lặp polling
@@ -611,9 +611,8 @@ class VideoRenderApp(ctk.CTk):
                 def _progress(current, total):
                     # Progress tổng quát (khi xong 1 video)
                     def _update():
-                        self.video_tab.render_progress.set(current / total)
                         self.video_tab.render_status.configure(
-                            text=f"🔄 Render: {current}/{total}"
+                            text=f"🔄 Tổng tiến độ: {current}/{total}"
                         )
                     self.after(0, _update)
 

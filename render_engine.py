@@ -136,6 +136,55 @@ class RenderEngine:
             pass
         return 0.0
 
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        """Loại bỏ ký tự đặc biệt để làm tên thư mục/file an toàn."""
+        import re
+        # Thay thế khoảng trắng bằng dấu gạch dưới và loại bỏ ký tự không phải chữ/số
+        safe = re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_')
+        return safe or "Unknown"
+
+    def _create_thumbnail(self, bg_img: Image.Image, namepng_path: str, 
+                         text_img: Image.Image, text_pos: tuple, 
+                         video_type: str = 'long', np_s: int = 300) -> Image.Image:
+        """
+        Tạo ảnh Thumbnail bằng cách ghép các lớp y hệt video.
+        - Long: NamePNG ở giữa trên, Text ở vị trí X,Y.
+        - Short: NamePNG ở giữa dưới, Text ở vị trí cố định.
+        """
+        # Copy bg để không làm hỏng ảnh gốc
+        thumb = bg_img.copy().convert("RGBA")
+        
+        # 1. Chèn NamePNG
+        if namepng_path and os.path.exists(namepng_path):
+            with Image.open(namepng_path).convert("RGBA") as np_img:
+                # Scale NamePNG theo cấu hình
+                w, h = np_img.size
+                new_w = np_s
+                new_h = int(h * (new_w / w))
+                np_img = np_img.resize((new_w, new_h), Image.LANCZOS)
+                
+                if video_type == 'long':
+                    # Căn giữa phía trên
+                    pos = ((thumb.width - new_w) // 2, 50)
+                else:
+                    # Căn giữa ở phần dưới cho Short (VD: y=1200)
+                    pos = ((thumb.width - new_w) // 2, text_pos[1] - 400) # text_pos là của NamePNG trong Short?
+                    # Để chính xác hơn, Short dùng np_x, np_y
+                    pos = (text_pos[0], text_pos[1])
+                
+                thumb.alpha_composite(np_img, pos)
+        
+        # 2. Chèn Text Overlay
+        if text_img:
+            if video_type == 'long':
+                thumb.alpha_composite(text_img, text_pos)
+            else:
+                # Short video text overlay thường là full size canvas
+                thumb.alpha_composite(text_img, (0, 0))
+                
+        return thumb.convert("RGB")
+
     # ═══════════════════════════════════════════
     # MAIN START / CONTROL
     # ═══════════════════════════════════════════
@@ -321,26 +370,31 @@ class RenderEngine:
     # ═══════════════════════════════════════════
     def _render_long(self, job, config, output_folder, temp_dir,
                      log_callback) -> bool:
-        """Render 1 Video Long (16:9)."""
+        """Render 1 Video Long (16:9) + Thumbnail."""
         idx = job['index']
+        singer_name = job.get('singer_name', 'Unknown')
+        safe_singer = self._sanitize_filename(singer_name)
+        
+        # Tạo thư mục riêng cho ca sĩ
+        singer_dir = os.path.join(output_folder, safe_singer)
+        os.makedirs(singer_dir, exist_ok=True)
 
         if log_callback:
-            log_callback(f"🎬 LONG #{idx}: Chuẩn bị...")
+            log_callback(f"🎬 LONG #{idx}: Chuẩn bị cho {singer_name}...")
 
-        # 1. Tiền xử lý Background (resize 1920x1080)
+        # 1. Tiền xử lý Background
         bg_img = preprocess_image(job['background'], 'long')
         bg_path = save_image_to_temp(bg_img, f"bg_{idx}", temp_dir)
 
-        # 2. Ghép nối audio (nhiều bài → 1 file)
+        # 2. Ghép nối audio
         music_path = self._concat_audio(
             job['songs'], temp_dir, f"music_{idx}", log_callback
         )
         if not music_path:
-            if log_callback:
-                log_callback(f"❌ LONG #{idx}: Không thể ghép audio!")
             return False
 
-        # 3. Tạo text overlay (danh sách bài hát) bằng Pillow
+        # 3. Tạo text overlay
+        text_img = None
         text_path = None
         if job.get('display_list'):
             text_img = self._create_text_overlay(
@@ -350,12 +404,22 @@ class RenderEngine:
             )
             text_path = save_image_to_temp(text_img, f"text_{idx}", temp_dir)
 
-        # 4. Output path
-        output_path = job.get('output_path')
-        if not output_path:
-            output_path = os.path.join(output_folder, f"Video_Long_{idx:03d}.mp4")
+        # 4. Tạo Thumbnail (.jpg)
+        thumb_img = self._create_thumbnail(
+            bg_img=bg_img,
+            namepng_path=job.get('namepng'),
+            text_img=text_img,
+            text_pos=(job.get('font_x', 100), job.get('font_y', 300)),
+            video_type='long'
+        )
+        thumb_path = os.path.join(singer_dir, f"Thumb_Long_{idx:03d}.jpg")
+        thumb_img.save(thumb_path, "JPEG", quality=90)
 
-        # 5. Build FFmpeg command
+        # 5. Output path video
+        video_name = f"Video_Long_{idx:03d}.mp4"
+        output_path = os.path.join(singer_dir, video_name)
+
+        # 6. Build FFmpeg command
         duration = self.get_audio_duration(music_path)
         cmd = self._build_long_cmd(
             bg_path=bg_path,
@@ -368,19 +432,20 @@ class RenderEngine:
             output_path=output_path,
         )
 
-        # 6. Chạy FFmpeg
-        if log_callback:
-            log_callback(f"🎬 LONG #{idx}: Đang render...")
-
-        # Truyền duration để tính %
+        # 7. Chạy FFmpeg
         success = self._run_ffmpeg(
             cmd, log_callback, f"LONG #{idx}", 
             duration_sec=duration, 
             realtime_cb=job.get('realtime_cb')
         )
 
+        # Cleanup RAM
+        del bg_img
+        if text_img: del text_img
+        del thumb_img
+
         if success and log_callback:
-            log_callback(f"✅ LONG #{idx}: Xong → {Path(output_path).name}")
+            log_callback(f"✅ LONG #{idx}: Xong → {safe_singer}/{video_name}")
 
         return success
 
@@ -389,11 +454,17 @@ class RenderEngine:
     # ═══════════════════════════════════════════
     def _render_short(self, job, config, output_folder, temp_dir,
                       log_callback) -> bool:
-        """Render 1 Video Short (9:16)."""
+        """Render 1 Video Short (9:16) + Thumbnail."""
         idx = job['index']
+        singer_name = job.get('singer_name', 'Unknown')
+        safe_singer = self._sanitize_filename(singer_name)
+
+        # Tạo thư mục riêng cho ca sĩ
+        singer_dir = os.path.join(output_folder, safe_singer)
+        os.makedirs(singer_dir, exist_ok=True)
 
         if log_callback:
-            log_callback(f"📱 SHORT #{idx}: Chuẩn bị...")
+            log_callback(f"📱 SHORT #{idx}: Chuẩn bị cho {singer_name}...")
 
         # 1. Tiền xử lý Background (cắt phần 3 → 1080x1920)
         if job.get('background') and os.path.exists(job['background']):
@@ -405,24 +476,34 @@ class RenderEngine:
         # 2. Music (1 bài, cắt theo duration)
         music_path = job.get('song', '')
         if not music_path or not os.path.exists(music_path):
-            if log_callback:
-                log_callback(f"❌ SHORT #{idx}: Không tìm thấy file nhạc!")
             return False
 
         # 3. Song name overlay
+        text_img = None
         text_path = None
         song_name = job.get('song_name', '')
         if song_name:
             text_img = self._create_short_song_overlay(song_name)
             text_path = save_image_to_temp(text_img, f"txt_short_{idx}", temp_dir)
 
-        # 4. Output path
-        duration = job.get('duration', 60)
-        output_path = job.get('output_path')
-        if not output_path:
-            output_path = os.path.join(output_folder, f"Video_Short_{idx:03d}.mp4")
+        # 4. Tạo Thumbnail (.jpg)
+        thumb_img = self._create_thumbnail(
+            bg_img=bg_img,
+            namepng_path=job.get('namepng'),
+            text_img=text_img,
+            text_pos=(job.get('namepng_x', 100), job.get('namepng_y', 800)),
+            video_type='short',
+            np_s=job.get('namepng_s', 300)
+        )
+        thumb_path = os.path.join(singer_dir, f"Thumb_Short_{idx:03d}.jpg")
+        thumb_img.save(thumb_path, "JPEG", quality=90)
 
-        # 5. Build FFmpeg command
+        # 5. Output path video
+        video_name = f"Video_Short_{idx:03d}.mp4"
+        output_path = os.path.join(singer_dir, video_name)
+        duration = job.get('duration', 60)
+
+        # 6. Build FFmpeg command
         cmd = self._build_short_cmd(
             bg_path=bg_path,
             music_path=music_path,
@@ -436,18 +517,20 @@ class RenderEngine:
             output_path=output_path,
         )
 
-        # 6. Chạy FFmpeg
-        if log_callback:
-            log_callback(f"📱 SHORT #{idx}: Đang render ({duration}s)...")
-
+        # 7. Chạy FFmpeg
         success = self._run_ffmpeg(
             cmd, log_callback, f"SHORT #{idx}", 
             duration_sec=duration, 
             realtime_cb=job.get('realtime_cb')
         )
 
+        # Cleanup RAM
+        del bg_img
+        if text_img: del text_img
+        del thumb_img
+
         if success and log_callback:
-            log_callback(f"✅ SHORT #{idx}: Xong → {Path(output_path).name}")
+            log_callback(f"✅ SHORT #{idx}: Xong → {safe_singer}/{video_name}")
 
         return success
 
@@ -607,7 +690,8 @@ class RenderEngine:
         cmd = ['ffmpeg', '-y']
 
         # ─── INPUTS ───
-        cmd.extend(['-loop', '1', '-i', bg_path])           # 0: background
+        # Thêm -framerate 30 cho background để chống lỗi sập frame
+        cmd.extend(['-framerate', '30', '-loop', '1', '-i', bg_path]) 
         input_map = {'bg': 0}
         next_idx = 1
 
@@ -643,11 +727,11 @@ class RenderEngine:
             f"format=yuv420p[{out}]"
         )
 
-        # Layer 2: Effect overlay (Sử dụng colorkey để xóa nền đen cho các video effect MP4)
+        # Layer 2: Effect overlay (Sử dụng colorkey tách nền đen giúp trong suốt)
         if has_effect:
             filters.append(
                 f"[{input_map['effect']}:v]scale=1920:1080,"
-                f"colorkey=0x000000:0.1:0.1,format=yuva420p[eff]"
+                f"colorkey=black:0.1:0.2,format=yuva420p[eff]"
             )
             new_out = 'v_eff'
             filters.append(
@@ -734,7 +818,8 @@ class RenderEngine:
         cmd = ['ffmpeg', '-y']
 
         # ─── INPUTS ───
-        cmd.extend(['-loop', '1', '-i', bg_path])
+        # Thêm -framerate 30 cho background để chống lỗi sập frame
+        cmd.extend(['-framerate', '30', '-loop', '1', '-i', bg_path])
         input_map = {'bg': 0}
         next_idx = 1
 
@@ -770,11 +855,11 @@ class RenderEngine:
             f"format=yuv420p[{out}]"
         )
 
-        # Layer 2: Effect overlay (Sử dụng colorkey để xóa nền đen cho các video effect MP4)
+        # Layer 2: Effect overlay (Sử dụng colorkey tách nền đen giúp trong suốt)
         if has_effect:
             filters.append(
                 f"[{input_map['effect']}:v]scale=1080:1920,"
-                f"colorkey=0x000000:0.1:0.1,format=yuva420p[eff]"
+                f"colorkey=black:0.1:0.2,format=yuva420p[eff]"
             )
             new_out = 'v_eff'
             filters.append(
