@@ -7,6 +7,7 @@ import customtkinter as ctk
 import threading
 from tab_video import VideoTab
 from tab_download import DownloadTab
+from tab_visualizer import VisualizerTab
 from data_handler import prepare_all_jobs
 from render_engine import RenderEngine, RenderState
 
@@ -99,8 +100,8 @@ class VideoRenderApp(ctk.CTk):
         )
         self.tabview.grid(row=1, column=0, padx=10, pady=(5, 5), sticky="nsew")
 
-        # Tab 1: Video Long + Short
-        tab1 = self.tabview.add("📹  Video Long + Short")
+        # Tab 1: Video Playlist Long + Short
+        tab1 = self.tabview.add("📹  Video Playlist Long + Short")
         tab1.grid_columnconfigure(0, weight=1)
         tab1.grid_rowconfigure(0, weight=1)
 
@@ -114,6 +115,14 @@ class VideoRenderApp(ctk.CTk):
 
         self.download_tab = DownloadTab(tab2, self)
         self.download_tab.grid(row=0, column=0, sticky="nsew")
+
+        # Tab 3: Sóng Nhạc
+        tab3 = self.tabview.add("🎵  Video Visualizer (Sóng Nhạc)")
+        tab3.grid_columnconfigure(0, weight=1)
+        tab3.grid_rowconfigure(0, weight=1)
+        
+        self.visualizer_tab = VisualizerTab(tab3, self)
+        self.visualizer_tab.grid(row=0, column=0, sticky="nsew")
 
     # ═══════════════════════════════════════════
     # LOG HELPER
@@ -665,6 +674,169 @@ class VideoRenderApp(ctk.CTk):
     def _on_tab_change(self):
         """Không làm gì vì nút đã nằm trong tab."""
         pass
+
+    def start_visualizer_render(self, config, folders):
+        """Khởi chạy Render Sóng Nhạc hàng loạt."""
+        if self.render_engine.is_running:
+            self.log("⚠️ Có tiến trình render khác đang chạy!")
+            return
+
+        from data_handler import generate_visualizer_jobs
+        jobs = generate_visualizer_jobs(folders['bg'], folders['music'], config, self.log)
+        if not jobs: return
+
+        def _worker():
+            self._clear_log()
+            self.log(f"🚀 Bắt đầu render {len(jobs)} video sóng nhạc...\n")
+            
+            # Khởi tạo temp chung cho cả đợt render
+            import tempfile, shutil
+            batch_temp = tempfile.mkdtemp(prefix="render_vis_batch_")
+            
+            completed = 0
+            for i, job in enumerate(jobs):
+                # UI Update
+                self.after(0, lambda idx=i: self.visualizer_tab.btn_render.configure(
+                    state="disabled", text=f"🔄 Rendering {idx+1}/{len(jobs)}..."
+                ))
+                
+                # Realtime callback cho từng video
+                def _cb(lbl, pct):
+                    self.after(0, lambda p=pct: self.visualizer_tab.btn_render.configure(
+                        text=f"🔄 Video {i+1}: {p:.1f}%"
+                    ))
+
+                success = self.render_engine._render_visualizer(job, batch_temp, self.log, _cb)
+                if success: completed += 1
+
+            # Cleanup
+            shutil.rmtree(batch_temp, ignore_errors=True)
+            
+            self.log(f"\n✅ Đã hoàn thành {completed}/{len(jobs)} video sóng nhạc!")
+            self.after(0, lambda: self.visualizer_tab.btn_render.configure(
+                state="normal", text="▶ Bắt đầu Render"
+            ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_demo_visualizer(self):
+        """Tính năng Demo cho Sóng Nhạc hàng loạt."""
+        valid, err = self.visualizer_tab.validate()
+        if not valid:
+            self.log(f"❌ {err}")
+            return
+
+        config = self.visualizer_tab.get_config()
+        folders = self.visualizer_tab.get_folders()
+
+        self.log(f"\n{'═' * 50}")
+        self.log("👁 DEMO — Video Visualizer (Sóng Nhạc)")
+        self.log(f"{'═' * 50}\n")
+
+        from data_handler import generate_visualizer_jobs
+        jobs = generate_visualizer_jobs(folders['bg'], folders['music'], config, self.log)
+        if not jobs: return
+
+        from PIL import Image, ImageDraw, ImageFont
+        preview_images = []
+        
+        # Giới hạn tạo demo tối đa 5 bản ghi để tránh lag
+        for job in jobs[:5]:
+            # 1. Background (1920x1080)
+            bg_img = Image.open(job['background']).convert("RGBA")
+            bg_img = bg_img.resize((1920, 1080), Image.LANCZOS)
+            
+            # 2. Vẽ vị trí giả lập Sóng Nhạc (Khối chữ nhật mờ 50%)
+            overlay = Image.new('RGBA', bg_img.size, (0,0,0,0))
+            draw = ImageDraw.Draw(overlay)
+            x = int(job['wave_x'])
+            y = int(job['wave_y'])
+            color = job['wave_color']
+            
+            # Khối đen mờ 50% cho vùng sóng nhạc (1920x200)
+            draw.rectangle([x, y, x + 1920, y + 200], fill=(0, 0, 0, 128))
+            # Viền và chữ
+            draw.rectangle([x, y, x + 1920, y + 200], outline=color, width=3)
+            
+            try:
+                # Thử load font mặc định
+                font = ImageFont.truetype("arial.ttf", 60)
+            except:
+                font = ImageFont.load_default()
+                
+            draw.text((x + 650, y + 70), "VỊ TRÍ SÓNG NHẠC Ở ĐÂY", fill=color, font=font)
+            
+            # Gộp lớp
+            bg_img = Image.alpha_composite(bg_img, overlay)
+            preview_images.append(bg_img.convert("RGB"))
+
+        # Hiển thị Carousel Popup
+        self._show_preview_popup(jobs[:5], preview_images, "visualizer")
+
+    def _show_preview_popup(self, jobs, preview_images, demo_type):
+        """Hàm dùng chung để hiển thị Carousel Popup cho mọi loại demo."""
+        preview_popup = ctk.CTkToplevel(self)
+        preview_popup.title(f"👁️ Bản xem trước Demo")
+        preview_popup.transient(self)
+        preview_popup.grab_set()
+
+        # Kích thước
+        if demo_type == "short":
+            display_w, display_h = 320, 569
+        else:
+            display_w, display_h = 800, 450
+
+        preview_popup.geometry(f"{display_w + 140}x{display_h + 160}")
+        preview_popup.resizable(False, False)
+
+        current_idx = 0
+        total = len(preview_images)
+
+        # UI Components
+        lbl_title = ctk.CTkLabel(preview_popup, text="", font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_title.pack(pady=10)
+
+        main_frame = ctk.CTkFrame(preview_popup, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True)
+
+        lbl_img = ctk.CTkLabel(main_frame, text="")
+        lbl_img.pack(expand=True)
+
+        lbl_details = ctk.CTkLabel(preview_popup, text="", font=ctk.CTkFont(size=12))
+        lbl_details.pack(pady=10)
+
+        # Carousel Update
+        def update_ui():
+            nonlocal current_idx
+            lbl_title.configure(text=f"🎥 Video {current_idx + 1} / {total}")
+            
+            img = preview_images[current_idx].resize((display_w, display_h), Image.LANCZOS)
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(display_w, display_h))
+            lbl_img.configure(image=ctk_img)
+            lbl_img.image = ctk_img # Keep ref
+            
+            job = jobs[current_idx]
+            if demo_type == "visualizer":
+                details = f"🖼️ BG: {Path(job['background']).name}\n🎵 Nhạc: {len(job['songs'])} bài | 🌊 Kiểu: {job['wave_mode']}"
+            elif demo_type == "long":
+                details = f"🖼️ BG: {Path(job['background']).name}\n🎵 Nhạc: {len(job['songs'])} bài"
+            else:
+                details = f"🖼️ BG: {Path(job['background']).name}\n🎵 Bài: {job.get('song_name')}"
+            lbl_details.configure(text=details)
+
+        # Nav Buttons
+        btn_prev = ctk.CTkButton(main_frame, text="<", width=40, command=lambda: move(-1))
+        btn_prev.place(x=10, rely=0.5, anchor="w")
+        
+        btn_next = ctk.CTkButton(main_frame, text=">", width=40, command=lambda: move(1))
+        btn_next.place(x=display_w + 140 - 10, rely=0.5, anchor="e")
+
+        def move(delta):
+            nonlocal current_idx
+            current_idx = (current_idx + delta) % total
+            update_ui()
+
+        update_ui()
 
     # ═══════════════════════════════════════════
     # SETTINGS PERSISTENCE (Ghi nhớ cấu hình)

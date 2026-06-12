@@ -479,7 +479,7 @@ class VideoTab(ctk.CTkFrame):
         ).pack(side="left", padx=(0, 5))
 
         self.thread_slider = ctk.CTkSlider(
-            inner, from_=1, to=5, number_of_steps=4,
+            inner, from_=1, to=3, number_of_steps=2,
             width=100,
             variable=self.thread_count,
             command=self._on_thread_change,

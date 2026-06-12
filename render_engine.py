@@ -370,83 +370,48 @@ class RenderEngine:
     # ═══════════════════════════════════════════
     def _render_long(self, job, config, output_folder, temp_dir,
                      log_callback) -> bool:
-        """Render 1 Video Long (16:9) + Thumbnail."""
+        """Render 1 Video Long + Trích xuất Thumbnail từ video."""
         idx = job['index']
-        singer_name = job.get('singer_name', 'Unknown')
-        safe_singer = self._sanitize_filename(singer_name)
+        singer = job.get('singer_name', 'Unknown')
+        safe_singer = self._sanitize_filename(singer)
         
-        # Tạo thư mục riêng cho ca sĩ
-        singer_dir = os.path.join(output_folder, safe_singer)
-        os.makedirs(singer_dir, exist_ok=True)
+        # 1. Tạo cấu trúc thư mục 3 lớp
+        base_dir = os.path.join(output_folder, safe_singer)
+        video_dir = os.path.join(base_dir, "Video Long")
+        thumb_dir = os.path.join(base_dir, "Thumb")
+        os.makedirs(video_dir, exist_ok=True)
+        os.makedirs(thumb_dir, exist_ok=True)
+        os.makedirs(os.path.join(base_dir, "Video Short"), exist_ok=True) # Tạo sẵn cho đồng bộ
 
-        if log_callback:
-            log_callback(f"🎬 LONG #{idx}: Chuẩn bị cho {singer_name}...")
+        if log_callback: log_callback(f"🎬 LONG #{idx}: Đang xử lý cho {singer}...")
 
-        # 1. Tiền xử lý Background
+        # Tiền xử lý (Background, Audio, Text)
         bg_img = preprocess_image(job['background'], 'long')
         bg_path = save_image_to_temp(bg_img, f"bg_{idx}", temp_dir)
+        music_path = self._concat_audio(job['songs'], temp_dir, f"music_{idx}", log_callback)
+        if not music_path: return False
 
-        # 2. Ghép nối audio
-        music_path = self._concat_audio(
-            job['songs'], temp_dir, f"music_{idx}", log_callback
-        )
-        if not music_path:
-            return False
-
-        # 3. Tạo text overlay
-        text_img = None
         text_path = None
         if job.get('display_list'):
-            text_img = self._create_text_overlay(
-                names=job['display_list'],
-                font_path=job.get('font_path', ''),
-                font_size=job.get('font_s', 36),
-            )
+            text_img = self._create_text_overlay(job['display_list'], job.get('font_path', ''), job.get('font_s', 36))
             text_path = save_image_to_temp(text_img, f"text_{idx}", temp_dir)
+            del text_img
 
-        # 4. Tạo Thumbnail (.jpg)
-        thumb_img = self._create_thumbnail(
-            bg_img=bg_img,
-            namepng_path=job.get('namepng'),
-            text_img=text_img,
-            text_pos=(job.get('font_x', 100), job.get('font_y', 300)),
-            video_type='long'
-        )
-        thumb_path = os.path.join(singer_dir, f"Thumb_Long_{idx:03d}.jpg")
-        thumb_img.save(thumb_path, "JPEG", quality=90)
+        # 2. Render Video
+        output_path = os.path.join(video_dir, f"Video_Long_{idx:03d}.mp4")
+        cmd = self._build_long_cmd(bg_path, music_path, job.get('effect'), job.get('namepng'), text_path, job.get('font_x', 100), job.get('font_y', 300), output_path)
+        
+        success = self._run_ffmpeg(cmd, log_callback, f"LONG #{idx}", self.get_audio_duration(music_path), job.get('realtime_cb'))
+        
+        # 3. Trích xuất Thumb thành công 100% từ video
+        if success:
+            thumb_path = os.path.join(thumb_dir, f"Thumb_Long_{idx:03d}.jpg")
+            extract_cmd = ['ffmpeg', '-y', '-ss', '00:00:02', '-i', output_path, '-vframes', '1', '-q:v', '2', thumb_path]
+            subprocess.run(extract_cmd, capture_output=True, creationflags=_CREATE_FLAGS)
 
-        # 5. Output path video
-        video_name = f"Video_Long_{idx:03d}.mp4"
-        output_path = os.path.join(singer_dir, video_name)
-
-        # 6. Build FFmpeg command
-        duration = self.get_audio_duration(music_path)
-        cmd = self._build_long_cmd(
-            bg_path=bg_path,
-            music_path=music_path,
-            effect_path=job.get('effect'),
-            namepng_path=job.get('namepng'),
-            text_path=text_path,
-            text_x=job.get('font_x', 100),
-            text_y=job.get('font_y', 300),
-            output_path=output_path,
-        )
-
-        # 7. Chạy FFmpeg
-        success = self._run_ffmpeg(
-            cmd, log_callback, f"LONG #{idx}", 
-            duration_sec=duration, 
-            realtime_cb=job.get('realtime_cb')
-        )
-
-        # Cleanup RAM
         del bg_img
-        if text_img: del text_img
-        del thumb_img
-
         if success and log_callback:
-            log_callback(f"✅ LONG #{idx}: Xong → {safe_singer}/{video_name}")
-
+            log_callback(f"✅ LONG #{idx}: Xong -> [{safe_singer}/Video Long/Video_Long_{idx:03d}.mp4]")
         return success
 
     # ═══════════════════════════════════════════
@@ -454,84 +419,36 @@ class RenderEngine:
     # ═══════════════════════════════════════════
     def _render_short(self, job, config, output_folder, temp_dir,
                       log_callback) -> bool:
-        """Render 1 Video Short (9:16) + Thumbnail."""
+        """Render 1 Video Short (Không tạo Thumb)."""
         idx = job['index']
-        singer_name = job.get('singer_name', 'Unknown')
-        safe_singer = self._sanitize_filename(singer_name)
+        singer = job.get('singer_name', 'Unknown')
+        safe_singer = self._sanitize_filename(singer)
 
-        # Tạo thư mục riêng cho ca sĩ
-        singer_dir = os.path.join(output_folder, safe_singer)
-        os.makedirs(singer_dir, exist_ok=True)
+        # 1. Thư mục con
+        video_dir = os.path.join(output_folder, safe_singer, "Video Short")
+        os.makedirs(video_dir, exist_ok=True)
 
-        if log_callback:
-            log_callback(f"📱 SHORT #{idx}: Chuẩn bị cho {singer_name}...")
+        if log_callback: log_callback(f"📱 SHORT #{idx}: Đang xử lý cho {singer}...")
 
-        # 1. Tiền xử lý Background (cắt phần 3 → 1080x1920)
-        if job.get('background') and os.path.exists(job['background']):
-            bg_img = crop_short_from_long_bg(job['background'])
-        else:
-            bg_img = Image.new('RGB', SHORT_SIZE, (20, 20, 30))
-        bg_path = save_image_to_temp(bg_img, f"bg_short_{idx}", temp_dir)
-
-        # 2. Music (1 bài, cắt theo duration)
-        music_path = job.get('song', '')
-        if not music_path or not os.path.exists(music_path):
-            return False
-
-        # 3. Song name overlay
-        text_img = None
+        bg_img = crop_short_from_long_bg(job['background']) if job.get('background') else Image.new('RGB', SHORT_SIZE, (20, 20, 30))
+        bg_path = save_image_to_temp(bg_img, f"bg_s_{idx}", temp_dir)
+        
         text_path = None
-        song_name = job.get('song_name', '')
-        if song_name:
-            text_img = self._create_short_song_overlay(song_name)
-            text_path = save_image_to_temp(text_img, f"txt_short_{idx}", temp_dir)
+        if job.get('song_name'):
+            text_img = self._create_short_song_overlay(job.get('song_name', ''))
+            text_path = save_image_to_temp(text_img, f"txt_s_{idx}", temp_dir)
+            del text_img
 
-        # 4. Tạo Thumbnail (.jpg)
-        thumb_img = self._create_thumbnail(
-            bg_img=bg_img,
-            namepng_path=job.get('namepng'),
-            text_img=text_img,
-            text_pos=(job.get('namepng_x', 100), job.get('namepng_y', 800)),
-            video_type='short',
-            np_s=job.get('namepng_s', 300)
-        )
-        thumb_path = os.path.join(singer_dir, f"Thumb_Short_{idx:03d}.jpg")
-        thumb_img.save(thumb_path, "JPEG", quality=90)
-
-        # 5. Output path video
-        video_name = f"Video_Short_{idx:03d}.mp4"
-        output_path = os.path.join(singer_dir, video_name)
+        # 2. Render Video
+        output_path = os.path.join(video_dir, f"Video_Short_{idx:03d}.mp4")
         duration = job.get('duration', 60)
-
-        # 6. Build FFmpeg command
-        cmd = self._build_short_cmd(
-            bg_path=bg_path,
-            music_path=music_path,
-            duration=duration,
-            effect_path=job.get('effect'),
-            namepng_path=job.get('namepng'),
-            np_x=job.get('namepng_x', 100),
-            np_y=job.get('namepng_y', 800),
-            np_s=job.get('namepng_s', 300),
-            text_path=text_path,
-            output_path=output_path,
-        )
-
-        # 7. Chạy FFmpeg
-        success = self._run_ffmpeg(
-            cmd, log_callback, f"SHORT #{idx}", 
-            duration_sec=duration, 
-            realtime_cb=job.get('realtime_cb')
-        )
-
-        # Cleanup RAM
+        cmd = self._build_short_cmd(bg_path, job['song'], duration, job.get('effect'), job.get('namepng'), job.get('namepng_x', 100), job.get('namepng_y', 800), job.get('namepng_s', 300), text_path, output_path)
+        
+        success = self._run_ffmpeg(cmd, log_callback, f"SHORT #{idx}", duration, job.get('realtime_cb'))
+        
         del bg_img
-        if text_img: del text_img
-        del thumb_img
-
         if success and log_callback:
-            log_callback(f"✅ SHORT #{idx}: Xong → {safe_singer}/{video_name}")
-
+            log_callback(f"✅ SHORT #{idx}: Xong -> [{safe_singer}/Video Short/Video_Short_{idx:03d}.mp4]")
         return success
 
     # ═══════════════════════════════════════════
@@ -683,252 +600,313 @@ class RenderEngine:
     def _build_long_cmd(self, bg_path, music_path, effect_path,
                         namepng_path, text_path,
                         text_x, text_y, output_path) -> list:
-        """
-        Xây dựng lệnh FFmpeg cho Video Long (16:9).
-        Filter chain: Background → Effect overlay → NamePNG → Text overlay
-        """
+        """Xây dựng lệnh FFmpeg cho Video Long (16:9) với chế độ hòa trộn Screen."""
         cmd = ['ffmpeg', '-y']
-
-        # ─── INPUTS ───
         # Thêm -framerate 30 cho background để chống lỗi sập frame
         cmd.extend(['-framerate', '30', '-loop', '1', '-i', bg_path]) 
         input_map = {'bg': 0}
         next_idx = 1
 
-        has_effect = effect_path and os.path.exists(str(effect_path))
-        has_namepng = namepng_path and os.path.exists(str(namepng_path))
-        has_text = text_path and os.path.exists(str(text_path))
+        has_eff = effect_path and os.path.exists(str(effect_path))
+        has_np = namepng_path and os.path.exists(str(namepng_path))
+        has_txt = text_path and os.path.exists(str(text_path))
 
-        if has_effect:
+        if has_eff:
             cmd.extend(['-stream_loop', '-1', '-i', effect_path])
             input_map['effect'] = next_idx
             next_idx += 1
-
-        if has_namepng:
+        if has_np:
             cmd.extend(['-i', namepng_path])
             input_map['namepng'] = next_idx
             next_idx += 1
-
-        if has_text:
+        if has_txt:
             cmd.extend(['-i', text_path])
             input_map['text'] = next_idx
             next_idx += 1
-
-        cmd.extend(['-i', music_path])                      # audio
+        cmd.extend(['-i', music_path])
         input_map['music'] = next_idx
 
-        # ─── FILTER COMPLEX ───
+        # --- FILTER COMPLEX ---
         filters = []
         out = 'bg_s'
+        filters.append(f"[{input_map['bg']}:v]scale=1920:1080,setsar=1,format=yuv420p[{out}]")
 
-        # Layer 1: Background (scale + format)
-        filters.append(
-            f"[{input_map['bg']}:v]scale=1920:1080,setsar=1,"
-            f"format=yuv420p[{out}]"
-        )
-
-        # Layer 2: Effect overlay (Sử dụng colorkey tách nền đen giúp trong suốt)
-        if has_effect:
-            filters.append(
-                f"[{input_map['effect']}:v]scale=1920:1080,"
-                f"colorkey=black:0.1:0.2,format=yuva420p[eff]"
-            )
+        if has_eff:
+            # Sử dụng blend mode 'screen' để giữ nguyên chất lượng ánh sáng của effect
+            filters.append(f"[{input_map['effect']}:v]scale=1920:1080,format=yuv420p[eff_v]")
             new_out = 'v_eff'
-            filters.append(
-                f"[{out}][eff]overlay=0:0:format=auto[{new_out}]"
-            )
+            filters.append(f"[{out}][eff_v]blend=all_mode='screen':all_opacity=1[{new_out}]")
             out = new_out
 
-        # Layer 3: NamePNG (ảnh tên ca sĩ — căn giữa phía trên)
-        if has_namepng:
-            filters.append(
-                f"[{input_map['namepng']}:v]format=rgba[npng]"
-            )
-            new_out = 'v_npng'
-            filters.append(
-                f"[{out}][npng]overlay=(W-w)/2:50:format=auto[{new_out}]"
-            )
+        if has_np:
+            filters.append(f"[{input_map['namepng']}:v]format=rgba[np_v]")
+            new_out = 'v_np'
+            filters.append(f"[{out}][np_v]overlay=(W-w)/2:50:format=auto[{new_out}]")
             out = new_out
 
-        # Layer 4: Text overlay (danh sách bài — ở vị trí X, Y)
-        if has_text:
-            filters.append(
-                f"[{input_map['text']}:v]format=rgba[txt]"
-            )
+        if has_txt:
+            filters.append(f"[{input_map['text']}:v]format=rgba[txt_v]")
             new_out = 'v_txt'
-            filters.append(
-                f"[{out}][txt]overlay={text_x}:{text_y}:format=auto[{new_out}]"
-            )
+            filters.append(f"[{out}][txt_v]overlay={text_x}:{text_y}:format=auto[{new_out}]")
             out = new_out
 
-        # Đảm bảo định dạng màu đầu ra chuẩn yuv420p để tương thích mọi thiết bị
-        new_out = 'v_final'
-        filters.append(f"[{out}]format=yuv420p[{new_out}]")
-        out = new_out
+        filters.append(f"[{out}]format=yuv420p[v_final]")
+        cmd.extend(['-filter_complex', ';'.join(filters), '-map', '[v_final]', '-map', f'{input_map["music"]}:a'])
 
-        cmd.extend(['-filter_complex', ';'.join(filters)])
-
-        # ─── MAP ───
-        cmd.extend(['-map', f'[{out}]'])
-        cmd.extend(['-map', f'{input_map["music"]}:a'])
-
-        # ─── ENCODING ───
+        # --- ENCODING (Tối ưu tốc độ) ---
         if self._use_nvenc:
-            cmd.extend([
-                '-c:v', 'h264_nvenc',
-                '-preset', 'p5',       # p5 cho chất lượng/tốc độ nén tốt nhất
-                '-cq', '28',           # SỬ DỤNG CQ THAY VÌ BITRATE CỐ ĐỊNH (Giảm cực mạnh dung lượng)
-                '-rc', 'vbr',          # Variable bitrate
-                '-r', '30',            # Giới hạn FPS ở mức 30 để tránh file bị nặng do effect
-                '-pix_fmt', 'yuv420p',
-            ])
+            cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '24', '-rc', 'vbr', '-r', '30', '-pix_fmt', 'yuv420p'])
         else:
-            cmd.extend([
-                '-c:v', 'libx264',
-                '-preset', 'veryfast',  
-                '-crf', '28',          
-                '-r', '30',
-                '-pix_fmt', 'yuv420p',
-            ])
+            cmd.extend(['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-r', '30', '-pix_fmt', 'yuv420p'])
 
-        # Lấy thời lượng file nhạc để dùng -t thay vì -shortest nhằm tránh loop vô tận khi có effect loop
         duration = self.get_audio_duration(music_path)
-        if duration > 0:
-            cmd.extend(['-t', f"{duration:.3f}"])
-        else:
-            cmd.extend(['-shortest'])
-
-        cmd.extend([
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-movflags', '+faststart',
-            output_path
-        ])
-
+        if duration > 0: cmd.extend(['-t', f"{duration:.3f}"])
+        cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', output_path])
         return cmd
 
     def _build_short_cmd(self, bg_path, music_path, duration,
                          effect_path, namepng_path,
                          np_x, np_y, np_s,
                          text_path, output_path) -> list:
-        """
-        Xây dựng lệnh FFmpeg cho Video Short (9:16).
-        BG đã được cắt phần 3 bởi Pillow.
-        """
+        """Xây dựng lệnh FFmpeg cho Video Short (9:16) với chế độ hòa trộn Screen."""
         cmd = ['ffmpeg', '-y']
-
-        # ─── INPUTS ───
-        # Thêm -framerate 30 cho background để chống lỗi sập frame
         cmd.extend(['-framerate', '30', '-loop', '1', '-i', bg_path])
         input_map = {'bg': 0}
         next_idx = 1
 
-        has_effect = effect_path and os.path.exists(str(effect_path))
-        has_namepng = namepng_path and os.path.exists(str(namepng_path))
-        has_text = text_path and os.path.exists(str(text_path))
+        has_eff = effect_path and os.path.exists(str(effect_path))
+        has_np = namepng_path and os.path.exists(str(namepng_path))
+        has_txt = text_path and os.path.exists(str(text_path))
 
-        if has_effect:
+        if has_eff:
             cmd.extend(['-stream_loop', '-1', '-i', effect_path])
             input_map['effect'] = next_idx
             next_idx += 1
-
-        if has_namepng:
+        if has_np:
             cmd.extend(['-i', namepng_path])
             input_map['namepng'] = next_idx
             next_idx += 1
-
-        if has_text:
+        if has_txt:
             cmd.extend(['-i', text_path])
             input_map['text'] = next_idx
             next_idx += 1
-
         cmd.extend(['-i', music_path])
         input_map['music'] = next_idx
 
-        # ─── FILTER COMPLEX ───
+        # --- FILTER COMPLEX ---
         filters = []
         out = 'bg_s'
+        filters.append(f"[{input_map['bg']}:v]scale=1080:1920,setsar=1,format=yuv420p[{out}]")
 
-        # Layer 1: Background
+        if has_eff:
+            filters.append(f"[{input_map['effect']}:v]scale=1080:1920,format=yuv420p[eff_v]")
+            new_out = 'v_eff'
+            filters.append(f"[{out}][eff_v]blend=all_mode='screen':all_opacity=1[{new_out}]")
+            out = new_out
+
+        if has_np:
+            filters.append(f"[{input_map['namepng']}:v]format=rgba,scale={np_s}:-1[np_v]")
+            new_out = 'v_np'
+            filters.append(f"[{out}][np_v]overlay={np_x}:{np_y}:format=auto[{new_out}]")
+            out = new_out
+
+        if has_txt:
+            filters.append(f"[{input_map['text']}:v]format=rgba[txt_v]")
+            new_out = 'v_txt'
+            filters.append(f"[{out}][txt_v]overlay=0:0:format=auto[{new_out}]")
+            out = new_out
+
+        filters.append(f"[{out}]format=yuv420p[v_final]")
+        cmd.extend(['-filter_complex', ';'.join(filters), '-map', '[v_final]', '-map', f'{input_map["music"]}:a'])
+
+        # --- ENCODING ---
+        if self._use_nvenc:
+            cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '24', '-rc', 'vbr', '-r', '30', '-pix_fmt', 'yuv420p'])
+        else:
+            cmd.extend(['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-r', '30', '-pix_fmt', 'yuv420p'])
+
+        cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-t', str(duration), '-movflags', '+faststart', output_path])
+        return cmd
+
+    def _build_visualizer_cmd(self, bg_path, audio_path, wave_mode, wave_color, x, y, effect_path, output_path) -> list:
+        """
+        Xây dựng lệnh FFmpeg cho Video Sóng Nhạc với:
+        - Hiệu ứng Zoompan (Zoom In chậm)
+        - Hiệu ứng Sóng nhạc (Showwaves)
+        - Hiệu ứng nền hòa trộn Screen (nếu có)
+        """
+        cmd = ['ffmpeg', '-y']
+        
+        # Input 0: Background
+        cmd.extend(['-loop', '1', '-framerate', '30', '-i', bg_path])
+        # Input 1: Audio đã ghép nối
+        cmd.extend(['-i', audio_path])
+        
+        # Input 2: Effect (nếu có)
+        has_eff = effect_path and os.path.exists(str(effect_path))
+        if has_eff:
+            cmd.extend(['-stream_loop', '-1', '-i', effect_path])
+
+        # --- FILTER COMPLEX ---
+        filters = []
+        
+        # 1. Zoompan Background (1920x1080)
         filters.append(
-            f"[{input_map['bg']}:v]scale=1080:1920,setsar=1,"
-            f"format=yuv420p[{out}]"
+            f"[0:v]scale=1920:1080,setsar=1,"
+            f"zoompan=z='min(zoom+0.0005,1.1)':d=7000:s=1920x1080,format=yuv420p[v_bg]"
+        )
+        
+        last_v = "v_bg"
+
+        # 2. Hòa trộn Effect (nếu có) bằng mode 'screen'
+        if has_eff:
+            filters.append(f"[2:v]scale=1920:1080,format=yuv420p[eff_v]")
+            filters.append(f"[{last_v}][eff_v]blend=all_mode='screen':all_opacity=1[v_eff]")
+            last_v = "v_eff"
+
+        # 3. Tạo Sóng nhạc từ audio (Input 1)
+        filters.append(
+            f"[1:a]showwaves=s=1920x200:mode={wave_mode}:colors={wave_color}:rate=30,format=yuva420p[wave]"
+        )
+        
+        # 4. Overlay sóng lên background
+        filters.append(f"[{last_v}][wave]overlay=x={x}:y={y}:format=auto[v_final]")
+        
+        cmd.extend(['-filter_complex', ';'.join(filters)])
+        cmd.extend(['-map', '[v_final]', '-map', '1:a'])
+        
+        # --- ENCODING ---
+        if self._use_nvenc:
+            cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '24', '-rc', 'vbr', '-r', '30', '-pix_fmt', 'yuv420p'])
+        else:
+            cmd.extend(['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-r', '30', '-pix_fmt', 'yuv420p'])
+        
+        # Thời lượng theo audio
+        cmd.extend(['-shortest', '-movflags', '+faststart', output_path])
+        
+        return cmd
+
+    def _render_visualizer(self, job, temp_dir, log_callback, realtime_cb=None) -> bool:
+        """Render 1 Job Video Sóng Nhạc hàng loạt."""
+        idx = job['index']
+        output_dir = job.get('output_dir', '.')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if log_callback: log_callback(f"🎬 VISUALIZER #{idx}: Đang chuẩn bị...")
+
+        # 1. Ghép nối danh sách bài hát
+        music_path = self._concat_audio(job['songs'], temp_dir, f"music_vis_{idx}", log_callback)
+        if not music_path: return False
+
+        # 2. Xử lý Random Kiểu sóng
+        wave_mode = job['wave_mode']
+        if job.get('random_wave'):
+            import random
+            modes = ['cline', 'point', 'p2p', 'line']
+            wave_mode = random.choice(modes)
+        else:
+            # Lấy phần text trước ngoặc (VD: cline (Thanh) -> cline)
+            wave_mode = wave_mode.split(' ')[0]
+
+        # 3. Đường dẫn output
+        output_path = os.path.join(output_dir, f"Visualizer_Video_{idx:03d}.mp4")
+
+        # 4. Build & Run
+        cmd = self._build_visualizer_cmd(
+            bg_path=job['background'],
+            audio_path=music_path,
+            wave_mode=wave_mode,
+            wave_color=job['wave_color'],
+            x=job['wave_x'],
+            y=job['wave_y'],
+            effect_path=job.get('effect'),
+            output_path=output_path
         )
 
-        # Layer 2: Effect overlay (Sử dụng colorkey tách nền đen giúp trong suốt)
-        if has_effect:
-            filters.append(
-                f"[{input_map['effect']}:v]scale=1080:1920,"
-                f"colorkey=black:0.1:0.2,format=yuva420p[eff]"
-            )
-            new_out = 'v_eff'
-            filters.append(
-                f"[{out}][eff]overlay=0:0:format=auto[{new_out}]"
-            )
-            out = new_out
+        duration = self.get_audio_duration(music_path)
+        success = self._run_ffmpeg(cmd, log_callback, f"VISUALIZER #{idx}", duration, realtime_cb)
 
-        # Layer 3: NamePNG (scale theo np_s = width pixels)
-        if has_namepng:
-            filters.append(
-                f"[{input_map['namepng']}:v]format=rgba,"
-                f"scale={np_s}:-1[npng]"
-            )
-            new_out = 'v_npng'
-            filters.append(
-                f"[{out}][npng]overlay={np_x}:{np_y}:format=auto[{new_out}]"
-            )
-            out = new_out
+        if success and log_callback:
+            log_callback(f"✅ VISUALIZER #{idx}: Xong -> Visualizer_Video_{idx:03d}.mp4")
+            
+        return success
 
-        # Layer 4: Song name text (full canvas, overlay at 0:0)
-        if has_text:
-            filters.append(
-                f"[{input_map['text']}:v]format=rgba[txt]"
-            )
-            new_out = 'v_txt'
-            filters.append(
-                f"[{out}][txt]overlay=0:0:format=auto[{new_out}]"
-            )
-            out = new_out
+    def render_visualizer(self, config: dict, log_callback=None, realtime_cb=None) -> bool:
+        """
+        Tạo video sóng nhạc (Visualizer) từ ảnh nền và âm thanh.
+        Sử dụng zoompan cho BG và showwaves cho audio.
+        """
+        import os
+        from pathlib import Path
+        
+        bg_path = config.get('bg')
+        audio_path = config.get('audio')
+        output_dir = config.get('output_dir')
+        mode = config.get('mode', 'cline').split('(')[-1].split(')')[0] # Lấy cline, point hoặc p2p
+        x = config.get('x', '0')
+        y = config.get('y', '800')
+        color = config.get('color', '#FFFFFF')
 
-        # Đảm bảo định dạng màu đầu ra chuẩn yuv420p để tương thích mọi thiết bị
-        new_out = 'v_final'
-        filters.append(f"[{out}]format=yuv420p[{new_out}]")
-        out = new_out
+        # Đảm bảo thư mục output tồn tại
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, f"Visualizer_{Path(audio_path).stem}.mp4")
+        duration = self.get_audio_duration(audio_path)
+        
+        if duration <= 0:
+            if log_callback: log_callback("❌ Lỗi: Không lấy được thời lượng file nhạc!")
+            return False
 
+        # --- XÂY DỰNG LỆNH FFMPEG ---
+        cmd = ['ffmpeg', '-y']
+        
+        # Input 0: Background (Sử dụng loop cho zoompan)
+        cmd.extend(['-loop', '1', '-framerate', '30', '-i', bg_path])
+        # Input 1: Audio
+        cmd.extend(['-i', audio_path])
+
+        # Filter Complex:
+        # 1. Zoompan cho background (Zoom từ từ)
+        # 2. Showwaves cho audio (Tạo sóng nhạc)
+        # 3. Overlay sóng lên background
+        
+        filters = [
+            # Layer 1: Zoompan background (1920x1080)
+            f"[0:v]scale=1920:1080,setsar=1,zoompan=z='min(zoom+0.001,1.1)':d=700:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',format=yuv420p[v_bg]",
+            
+            # Layer 2: Showwaves từ audio
+            f"[1:a]showwaves=s=1920x200:mode={mode}:colors={color}:rate=30,format=yuva420p[v_wave]",
+            
+            # Layer 3: Overlay sóng lên bg tại vị trí X, Y
+            f"[v_bg][v_wave]overlay={x}:{y}:format=auto[v_final]"
+        ]
+        
         cmd.extend(['-filter_complex', ';'.join(filters)])
-
-        # ─── MAP ───
-        cmd.extend(['-map', f'[{out}]'])
-        cmd.extend(['-map', f'{input_map["music"]}:a'])
-
-        # ─── ENCODING ───
-        if self._use_nvenc:
-            cmd.extend([
-                '-c:v', 'h264_nvenc',
-                '-preset', 'p5',       # p5 cho chất lượng/tốc độ nén tốt nhất
-                '-cq', '28',           # SỬ DỤNG CQ THAY VÌ BITRATE CỐ ĐỊNH (Giảm cực mạnh dung lượng)
-                '-rc', 'vbr',          # Variable bitrate
-                '-r', '30',            # Giới hạn FPS ở mức 30 để tránh file bị nặng do effect
-                '-pix_fmt', 'yuv420p',
-            ])
-        else:
-            cmd.extend([
-                '-c:v', 'libx264',
-                '-preset', 'veryfast',  
-                '-crf', '28',          
-                '-r', '30',
-                '-pix_fmt', 'yuv420p',
-            ])
-
+        cmd.extend(['-map', '[v_final]', '-map', '1:a'])
+        
+        # Encoding settings (Dùng chung bộ tối ưu)
+        self._build_common_encoding(cmd)
+        
         cmd.extend([
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-t', str(duration),
+            '-t', f"{duration:.3f}",
             '-movflags', '+faststart',
             output_path
         ])
 
-        return cmd
+        if log_callback:
+            log_callback(f"🎬 Bắt đầu render Visualizer cho: {Path(audio_path).name}...")
+
+        # Chạy FFmpeg
+        success = self._run_ffmpeg(
+            cmd, log_callback, "VISUALIZER", 
+            duration_sec=duration, 
+            realtime_cb=realtime_cb
+        )
+
+        if success and log_callback:
+            log_callback(f"✅ Render Visualizer Xong -> {Path(output_path).name}")
+            
+        return success
 
     # ═══════════════════════════════════════════
     # FFMPEG SUBPROCESS
@@ -938,12 +916,15 @@ class RenderEngine:
                     realtime_cb=None) -> bool:
         """
         Chạy FFmpeg subprocess và theo dõi.
-        Đọc log liên tục để tính phần trăm tiến trình.
+        Đọc log liên tục để tính phần trăm tiến trình (Có throttle 0.5s chống lag UI).
         """
         if self._cancel_event.is_set():
             return False
 
         try:
+            import time
+            last_update_time = 0.0
+
             # Chạy subprocess và đọc liên tục (stdout/stderr)
             process = subprocess.Popen(
                 cmd,
@@ -973,7 +954,12 @@ class RenderEngine:
                         h, m, s = match.groups()
                         current_sec = int(h) * 3600 + int(m) * 60 + float(s)
                         percent = min((current_sec / duration_sec) * 100, 99.9)
-                        realtime_cb(label, percent)
+                        
+                        # Chỉ update UI mỗi 0.5 giây để tránh lag máy
+                        now = time.time()
+                        if now - last_update_time > 0.5:
+                            realtime_cb(label, percent)
+                            last_update_time = now
 
             process.wait()
 

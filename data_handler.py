@@ -302,6 +302,65 @@ def scan_singer_media(singer_path: str, folders: dict) -> dict:
     }
 
 
+def generate_visualizer_jobs(bg_folder: str, music_folder: str, config: dict, log_callback=None) -> list:
+    """
+    Tạo danh sách render jobs cho Video Visualizer hàng loạt.
+    Hỗ trợ random hiệu ứng nền từ thư mục effect_folder.
+    """
+    if not bg_folder or not music_folder:
+        return []
+
+    # Lấy danh sách ảnh và nhạc
+    backgrounds = scan_folder(bg_folder, IMAGE_EXTENSIONS)
+    musics = scan_folder(music_folder, MUSIC_EXTENSIONS)
+    
+    # Lấy danh sách Effect (Nếu có chọn thư mục)
+    effects = []
+    effect_folder = config.get('effect_folder', '')
+    if effect_folder and os.path.exists(effect_folder):
+        effects = scan_folder(effect_folder, VIDEO_EXTENSIONS)
+
+    if not backgrounds or not musics:
+        if log_callback: log_callback("❌ Lỗi: Thư mục Ảnh hoặc Nhạc trống!")
+        return []
+
+    jobs = []
+    num_videos = config.get('num_videos', 1)
+    songs_per_video = config.get('songs_per_video', 1)
+
+    if log_callback:
+        log_callback(f"📊 Cấu hình Sóng Nhạc:")
+        log_callback(f"   Thư mục: {len(backgrounds)} ảnh | {len(musics)} nhạc | {len(effects)} effect")
+        log_callback(f"   Dự kiến: {num_videos} video | {songs_per_video} bài mỗi video")
+
+    for i in range(num_videos):
+        # 1. Random Ảnh Nền
+        bg_choice = random.choice(backgrounds)
+        
+        # 2. Random Nhạc (Lấy số lượng bài hát, xáo trộn)
+        music_pool = list(musics)
+        random.shuffle(music_pool)
+        selected_songs = music_pool[:songs_per_video]
+        
+        # 3. Random Effect (Nếu có thư mục Effect)
+        eff_choice = random.choice(effects) if effects else None
+
+        # 4. Tạo job (Lồng config theo yêu cầu Step 3)
+        jobs.append({
+            'type': 'visualizer',
+            'index': i + 1,
+            'background': bg_choice,
+            'songs': selected_songs,
+            'effect': eff_choice,
+            'config': config
+        })
+        
+        if log_callback:
+            log_callback(f"   🎬 Job #{i+1}: BG={Path(bg_choice).name} | {len(selected_songs)} bài | Effect={'Có' if eff_choice else 'Không'}")
+
+    return jobs
+
+
 def prepare_all_jobs(folders: dict, selected_singers: list, long_config: dict, short_config: dict,
                      log_callback=None) -> list:
     """
