@@ -479,7 +479,6 @@ class VideoRenderApp(ctk.CTk):
 
         self._clear_log()
         self.log("🚀 Bắt đầu chuẩn bị render...\n")
-        self.video_tab.render_progress.set(0)
 
         # Chuẩn bị jobs trên thread riêng
         def _prepare_and_render():
@@ -662,7 +661,6 @@ class VideoRenderApp(ctk.CTk):
         self.render_engine.cancel()
         self.log("✖ Đã hủy render!")
         self._update_button_states()
-        self.video_tab.render_progress.set(0)
 
     def _on_tab_change(self):
         """Không làm gì vì nút đã nằm trong tab."""
